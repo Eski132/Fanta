@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# fanta ultra v8 — renkli ve hatasız 🍊
+
+O="\033[38;5;208m"  # tema rengi (turuncu)
+W="\033[38;5;15m"   # beyaz
+B="\033[1;34m"      # mavi
+R="\033[0m"
+
+EXTRA=0
+[[ $1 == "-e" || $1 == "--extra" ]] && EXTRA=1
+
+clear
+
+# logo
+echo -e "${O}███████╗ █████╗ ███╗   ██╗████████╗ █████╗${R}"
+echo -e "${O}██╔════╝██╔══██╗████╗  ██║╚══██╔══╝██╔══██╗${R}"
+echo -e "${O}█████╗  ███████║██╔██╗ ██║   ██║   ███████║${R}"
+echo -e "${O}██╔══╝  ██╔══██║██║╚██╗██║   ██║   ██╔══██║${R}"
+echo -e "${O}██║     ██║  ██║██║ ╚████║   ██║   ██║  ██║${R}"
+echo -e "${O}╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝${R}"
+
+# temel bilgiler
+user=$(whoami)
+host=$(hostname)
+os=$(grep -Po '(?<=^NAME=).*' /etc/os-release | tr -d '"')
+kernel=$(uname -r)
+uptime=$(awk '{printf "%dh %dm", $1/3600, ($1%3600)/60}' /proc/uptime)
+pkgs=$(pacman -Qq 2>/dev/null | wc -l)
+shell=${SHELL##*/}
+#loadavg=$(awk '{print $1", "$2", "$3}' /proc/loadavg)
+
+echo -e "${W}${user}${O}@${W}${host}${R}"
+echo -e "${O}──────────────────────────────${R}"
+echo -e "${B}OS${R}: $os"
+echo -e "${B}Kernel${R}: $kernel"
+echo -e "${B}Uptime${R}: $uptime"
+echo -e "${B}Shell${R}: $shell"
+echo -e "${B}Packages${R}: $pkgs"
+#echo -e "${B}Load${R}: $loadavg"
+
+if [[ $EXTRA -eq 1 ]]; then
+    echo -e "${O}──────────────────────────────${R}"
+
+    # CPU
+    cpu_name=$(awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo | xargs)
+    cpu_cores=$(grep -c ^processor /proc/cpuinfo)
+    echo -e "${B}CPU${R}: $cpu_name (${O}${cpu_cores}${R} cores)"
+
+    # CPU usage bar
+    cpu_usage=$(grep 'cpu ' /proc/stat | awk '{usage=($2+$4)*100/($2+$4+$5)} END {print int(usage+0.5)}')
+    cpu_usage=${cpu_usage:-0}
+    bar_size=20
+    cpu_fill=$(( cpu_usage*bar_size/100 ))
+    [[ $cpu_fill -lt 0 ]] && cpu_fill=0
+    [[ $cpu_fill -gt $bar_size ]] && cpu_fill=$bar_size
+    cpu_empty=$((bar_size-cpu_fill))
+    cpu_bar="$(printf "${O}━%.0s${R}" $(seq 1 $cpu_fill))$(printf "─%.0s" $(seq 1 $cpu_empty))"
+    echo -e "${B}CPU Usage${R}: ${cpu_bar} ${O}${cpu_usage}%${R}"
+
+    # CPU Temp bar
+    if command -v sensors &>/dev/null; then
+        temps=$(sensors 2>/dev/null | grep -E 'Core [0-9]:' | awk '{print $3}' | tr -d '+°C' | grep -E '^[0-9]+$')
+        if [[ -n "$temps" ]]; then
+            sum=0; count=0
+            for t in $temps; do 
+                if [[ "$t" =~ ^[0-9]+$ ]]; then
+                    sum=$((sum+t))
+                    count=$((count+1))
+                fi
+            done
+            if [[ $count -gt 0 ]]; then
+                avg=$((sum/count))
+                temp_fill=$(( avg*bar_size/100 ))
+                [[ $temp_fill -lt 0 ]] && temp_fill=0
+                [[ $temp_fill -gt $bar_size ]] && temp_fill=$bar_size
+                temp_empty=$((bar_size-temp_fill))
+                temp_bar="$(printf "${O}━%.0s${R}" $(seq 1 $temp_fill))$(printf "─%.0s" $(seq 1 $temp_empty))"
+                echo -e "${B}CPU Temp${R}:  ${temp_bar} ${O}${avg}°C${R}"
+            fi
+        fi
+    fi
+
+    # CPU Frequency
+    cpu_freq=$(awk '/cpu MHz/ {sum+=$4; count++} END {printf "%.2f", sum/count/1000}' /proc/cpuinfo 2>/dev/null)
+    if [[ -n "$cpu_freq" && "$cpu_freq" != "0.00" ]]; then
+        echo -e "${B}CPU Freq${R}:  ${O}${cpu_freq}${R} GHz"
+    fi
+
+    # GPU
+    if lspci 2>/dev/null | grep -q -E 'VGA|3D'; then
+        gpu=$(lspci 2>/dev/null | grep -E 'VGA|3D' | head -n1 | sed 's/^.*: //' | sed 's/ (rev .*//')
+        echo -e "${B}GPU${R}: $gpu"
+        
+        # GPU Usage (try multiple methods)
+        gpu_usage=""
+        
+        # Try nvidia-smi for NVIDIA cards
+        if command -v nvidia-smi &>/dev/null; then
+            gpu_usage=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -n1)
+        fi
+        
+        # Try radeontop for AMD cards (if running)
+        if [[ -z "$gpu_usage" ]] && command -v radeontop &>/dev/null; then
+            gpu_usage=$(timeout 1s radeontop -d - -l 1 2>/dev/null | grep -oP 'gpu \K[0-9]+' | head -n1)
+        fi
+        
+        # Try intel_gpu_top for Intel cards
+        if [[ -z "$gpu_usage" ]] && command -v intel_gpu_top &>/dev/null; then
+            gpu_usage=$(timeout 1s intel_gpu_top -J 2>/dev/null | grep -oP '"busy":\K[0-9.]+' | head -n1 | cut -d. -f1)
+        fi
+        
+        if [[ -n "$gpu_usage" && "$gpu_usage" =~ ^[0-9]+$ ]]; then
+    	   gpu_fill=$(( gpu_usage*bar_size/100 ))
+    	   [[ $gpu_fill -lt 0 ]] && gpu_fill=0
+    	   [[ $gpu_fill -gt $bar_size ]] && gpu_fill=$bar_size
+    	   gpu_empty=$((bar_size-gpu_fill))
+    	   gpu_bar="$(printf "${O}━%.0s${R}" $(seq 1 $gpu_fill))$(printf "─%.0s" $(seq 1 $gpu_empty))"
+    	   echo -e "${B}GPU Usage${R}: ${gpu_bar} ${O}${gpu_usage}%${R}"
+	fi
+    fi
+
+    # Memory usage bar (GB)
+    mem_used=$(free -g | awk '/^Mem:/ {print $3}')
+    mem_total=$(free -g | awk '/^Mem:/ {print $2}')
+    mem_used=${mem_used:-0}
+    mem_total=${mem_total:-1}
+    mem_perc=$(( mem_used*100/mem_total ))
+    mem_fill=$(( mem_perc*bar_size/100 ))
+    [[ $mem_fill -lt 0 ]] && mem_fill=0
+    [[ $mem_fill -gt $bar_size ]] && mem_fill=$bar_size
+    mem_empty=$((bar_size-mem_fill))
+    mem_bar="$(printf "${O}━%.0s${R}" $(seq 1 $mem_fill))$(printf "─%.0s" $(seq 1 $mem_empty))"
+    echo -e "${B}Memory${R}:    ${mem_bar} ${O}${mem_used}Gi${R} / ${mem_total}Gi"
+
+    # Swap usage
+    swap_used=$(free -g | awk '/^Swap:/ {print $3}')
+    swap_total=$(free -g | awk '/^Swap:/ {print $2}')
+    if [[ -n "$swap_total" && "$swap_total" != "0" ]]; then
+        swap_used=${swap_used:-0}
+        swap_perc=$(( swap_used*100/swap_total ))
+        swap_fill=$(( swap_perc*bar_size/100 ))
+        [[ $swap_fill -lt 0 ]] && swap_fill=0
+        [[ $swap_fill -gt $bar_size ]] && swap_fill=$bar_size
+        swap_empty=$((bar_size-swap_fill))
+        swap_bar="$(printf "${O}━%.0s${R}" $(seq 1 $swap_fill))$(printf "─%.0s" $(seq 1 $swap_empty))"
+        echo -e "${B}Swap${R}:      ${swap_bar} ${O}${swap_used}Gi${R} / ${swap_total}Gi"
+    fi
+
+    # Disk usage bar
+    disk_used=$(df -h --total 2>/dev/null | grep total | awk '{print $3}' | sed 's/[GT]//')
+    disk_total=$(df -h --total 2>/dev/null | grep total | awk '{print $2}' | sed 's/[GT]//')
+    disk_used=${disk_used:-0}
+    disk_total=${disk_total:-1}
+    disk_used=$(printf "%.0f" "$disk_used" 2>/dev/null || echo 0)
+    disk_total=$(printf "%.0f" "$disk_total" 2>/dev/null || echo 1)
+    disk_perc=$(( disk_used*100/disk_total ))
+    disk_fill=$(( disk_perc*bar_size/100 ))
+    [[ $disk_fill -lt 0 ]] && disk_fill=0
+    [[ $disk_fill -gt $bar_size ]] && disk_fill=$bar_size
+    disk_empty=$((bar_size-disk_fill))
+    disk_bar="$(printf "${O}━%.0s${R}" $(seq 1 $disk_fill))$(printf "─%.0s" $(seq 1 $disk_empty))"
+    echo -e "${B}Disk${R}:      ${disk_bar} ${O}${disk_used}G${R} / ${disk_total}G"
+
+    # Fan Speed
+    fan_found=0
+    if [[ -n "$fan_speed" ]]; then
+    # sadece ilk satırı kullan
+    fan_speed=$(echo "$fan_speed" | head -n1)
+    # integer kontrolü
+    if [[ "$fan_speed" =~ ^[0-9]+$ ]]; then
+        fan_perc=$(( fan_speed*100/5000 ))
+        [[ $fan_perc -gt 100 ]] && fan_perc=100
+        fan_fill=$(( fan_perc*bar_size/100 ))
+        [[ $fan_fill -lt 0 ]] && fan_fill=0
+        [[ $fan_fill -gt $bar_size ]] && fan_fill=$bar_size
+        fan_empty=$((bar_size-fan_fill))
+        fan_bar="$(printf "${O}━%.0s${R}" $(seq 1 $fan_fill))$(printf "─%.0s" $(seq 1 $fan_empty))"
+        echo -e "${B}Fan Speed${R}: ${fan_bar} ${O}${fan_speed}${R} RPM"
+        fan_found=1
+    fi
+fi
+ 
+
+    # Battery
+    if command -v upower &>/dev/null; then
+        BAT_PATH=$(upower -e 2>/dev/null | grep BAT | head -n1)
+        if [[ -n "$BAT_PATH" ]]; then
+            BAT_PERCENT=$(upower -i "$BAT_PATH" 2>/dev/null | grep percentage | awk '{print $2}' | tr -d '%')
+            BAT_STATE=$(upower -i "$BAT_PATH" 2>/dev/null | grep state | awk '{print $2}')
+            BAT_PERCENT=${BAT_PERCENT:-0}
+            BAT_FILL=$(( BAT_PERCENT*bar_size/100 ))
+            [[ $BAT_FILL -lt 0 ]] && BAT_FILL=0
+            [[ $BAT_FILL -gt $bar_size ]] && BAT_FILL=$bar_size
+            BAT_EMPTY=$((bar_size-BAT_FILL))
+            BAT_BAR="$(printf "${O}━%.0s${R}" $(seq 1 $BAT_FILL))$(printf "─%.0s" $(seq 1 $BAT_EMPTY))"
+            echo -e "${B}Battery${R}:   ${BAT_BAR} ${O}${BAT_PERCENT}%${R} ($BAT_STATE)"
+        fi
+    fi
+
+    # Network - WiFi or Ethernet
+    network_found=0
+    
+    # Check nmcli first (NetworkManager)
+    if command -v nmcli &>/dev/null; then
+        # Check WiFi
+        wifi_status=$(nmcli -t -f TYPE,STATE,CONNECTION device 2>/dev/null | grep '^wifi:connected')
+        if [[ -n "$wifi_status" ]]; then
+            wifi_name=$(echo "$wifi_status" | cut -d: -f3)
+            wifi_signal=$(nmcli -f IN-USE,SIGNAL dev wifi 2>/dev/null | grep '^\*' | awk '{print $2}')
+            if [[ -n "$wifi_signal" ]]; then
+                echo -e "${B}Network${R}: WiFi → ${O}${wifi_name}${R} (${O}${wifi_signal}%${R})"
+            else
+                echo -e "${B}Network${R}: WiFi → ${O}${wifi_name}${R}"
+            fi
+            network_found=1
+        fi
+        
+        # Check Ethernet if WiFi not found
+        if [[ $network_found -eq 0 ]]; then
+            eth_status=$(nmcli -t -f TYPE,STATE,CONNECTION device 2>/dev/null | grep '^ethernet:connected')
+            if [[ -n "$eth_status" ]]; then
+                eth_name=$(echo "$eth_status" | cut -d: -f3)
+                echo -e "${B}Network${R}: Ethernet → ${O}${eth_name}${R}"
+                network_found=1
+            fi
+        fi
+    fi
+    
+    # Fallback to ip command if nmcli didn't work
+    if [[ $network_found -eq 0 ]] && command -v ip &>/dev/null; then
+        # Check for active WiFi
+        wifi_iface=$(ip link show 2>/dev/null | grep -E '^[0-9]+: w' | awk -F': ' '{print $2}' | head -n1)
+        if [[ -n "$wifi_iface" ]]; then
+            wifi_state=$(ip link show "$wifi_iface" 2>/dev/null | grep -o 'state [A-Z]*' | awk '{print $2}')
+            if [[ "$wifi_state" == "UP" ]]; then
+                if command -v iwgetid &>/dev/null; then
+                    wifi_name=$(iwgetid -r 2>/dev/null)
+                    if [[ -n "$wifi_name" ]]; then
+                        echo -e "${B}Network${R}: WiFi → ${O}${wifi_name}${R}"
+                        network_found=1
+                    fi
+                else
+                    echo -e "${B}Network${R}: WiFi Connected"
+                    network_found=1
+                fi
+            fi
+        fi
+        
+        # Check for active Ethernet
+        if [[ $network_found -eq 0 ]]; then
+            eth_iface=$(ip link show 2>/dev/null | grep -E '^[0-9]+: (eth|enp|eno)' | awk -F': ' '{print $2}' | head -n1)
+            if [[ -n "$eth_iface" ]]; then
+                eth_state=$(ip link show "$eth_iface" 2>/dev/null | grep -o 'state [A-Z]*' | awk '{print $2}')
+                if [[ "$eth_state" == "UP" ]]; then
+                    echo -e "${B}Network${R}: Ethernet Connected"
+                    network_found=1
+                fi
+            fi
+        fi
+    fi
+    
+    if [[ $network_found -eq 0 ]]; then
+        echo -e "${B}Network${R}: Disconnected"
+    fi
+
+    # Local IP
+    local_ip=$(ip route get 1 2>/dev/null | grep -oP 'src \K[^ ]+')
+    if [[ -n "$local_ip" ]]; then
+        echo -e "${B}Local IP${R}: ${O}${local_ip}${R}"
+    fi
+    
+    # Public IP
+    if command -v curl &>/dev/null; then
+        public_ip=$(curl -s https://ifconfig.me)
+    elif command -v wget &>/dev/null; then
+        public_ip=$(wget -qO- https://ifconfig.me)
+    fi
+
+    if [[ -n "$public_ip" ]]; then
+        echo -e "${B}Public IP${R}: ${O}${public_ip}${R}"
+    fi
+
+    # Processes count
+    process_count=$(ps aux | wc -l)
+    echo -e "${B}Processes${R}: ${O}${process_count}${R}"
+
+    # Monitors / Displays
+    if command -v xrandr &>/dev/null; then
+        monitors=$(xrandr 2>/dev/null | grep ' connected' | wc -l)
+        monitor_list=$(xrandr 2>/dev/null | grep ' connected' | awk '{print $1}' | tr '\n' ', ' | sed 's/,$//')
+        if [[ $monitors -gt 0 ]]; then
+            echo -e "${B}Monitors${R}: ${O}${monitors}${R} (${monitor_list})"
+        fi
+    fi
+
+    # Resolution
+    if command -v xdpyinfo &>/dev/null && [[ -n "$DISPLAY" ]]; then
+        resolution=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
+        if [[ -n "$resolution" ]]; then
+            echo -e "${B}Resolution${R}: ${O}${resolution}${R}"
+        fi
+    fi
+fi
+
+echo -e "${O}──────────────────────────────${R}"
+echo -e "${O}Shrek approved.${R}"
